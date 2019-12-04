@@ -1,6 +1,9 @@
 #include "router.h"
 #include <stdint.h>
 #include <stdlib.h>
+#include <list>
+#include <algorithm>
+#include <limits>
 
 /*
   RoutingTable Entry 的定义如下：
@@ -18,6 +21,31 @@
   你可以在全局变量中把路由表以一定的数据结构格式保存下来。
 */
 
+inline uint32_t gen_mask(uint32_t len) {
+    return std::numeric_limits<uint32_t>::max() >> (32 - len); 
+}
+
+using RoutingTable = std::list<RoutingTableEntry>;
+static RoutingTable rt;
+
+void insert(RoutingTableEntry& entry) {
+    auto itr = std::find_if(rt.begin(), rt.end(), [&entry](const RoutingTableEntry& e) {
+                return (e.addr == entry.addr) &&
+                       (e.len == entry.len);
+            });
+    if (itr != rt.end())
+        *itr = entry;
+    else
+        rt.push_front(entry);
+}
+
+void remove(RoutingTableEntry& entry) {
+    rt.remove_if([&entry](const RoutingTableEntry& e) {
+                return (e.addr == entry.addr) &&
+                       (e.len == entry.len);
+            });
+}
+
 /**
  * @brief 插入/删除一条路由表表项
  * @param insert 如果要插入则为 true ，要删除则为 false
@@ -26,8 +54,12 @@
  * 插入时如果已经存在一条 addr 和 len 都相同的表项，则替换掉原有的。
  * 删除时按照 addr 和 len 匹配。
  */
-void update(bool insert, RoutingTableEntry entry) {
-  // TODO:
+void update(bool isInsert, RoutingTableEntry entry) {
+    if (isInsert) {
+        insert(entry);
+    } else {
+        remove(entry);
+    }
 }
 
 /**
@@ -38,8 +70,20 @@ void update(bool insert, RoutingTableEntry entry) {
  * @return 查到则返回 true ，没查到则返回 false
  */
 bool query(uint32_t addr, uint32_t *nexthop, uint32_t *if_index) {
-  // TODO:
-  *nexthop = 0;
-  *if_index = 0;
-  return false;
+    uint32_t len = 0;
+    bool found = false;
+
+    for (const RoutingTableEntry& e : rt) {
+        if (e.len >= len) {
+            uint32_t mask = gen_mask(e.len);
+            if ((addr & mask) == e.addr) {
+                *nexthop = e.nexthop;
+                *if_index = e.if_index;
+                len = e.len;
+                found = true;
+            }
+        }
+    }
+
+    return found;
 }
