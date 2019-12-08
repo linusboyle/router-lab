@@ -21,6 +21,8 @@
 */
 
 uint32_t gen_mask(uint32_t len) {
+    if (len == 0) return 0; // cope with C/C++ Undefined Behaviour
+     
     return std::numeric_limits<uint32_t>::max() >> (32 - len); 
 }
 

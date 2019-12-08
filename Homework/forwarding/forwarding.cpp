@@ -43,8 +43,9 @@ static void updateTTL(uint8_t *packet) {
 
 void updateChksm(uint8_t *packet) {
     size_t hl = header_length(packet);
-    uint16_t new_sum = compute_new_checksum(packet, hl);
     uint16_t* hw = reinterpret_cast<uint16_t*>(packet + 10);
+    *hw = 0;
+    uint16_t new_sum = compute_new_checksum(packet, hl);
     *hw = new_sum;
 }
 

@@ -53,16 +53,21 @@ union helper {
     uint8_t bytes[4];
 };
 
-bool check_mask(uint32_t mask) {
-    // transform
+uint32_t change_endian_32b(uint32_t word) {
     union helper h1;
-    h1.word = mask;
+    h1.word = word;
     union helper h2;
     h2.bytes[0] = h1.bytes[3];
     h2.bytes[1] = h1.bytes[2];
     h2.bytes[2] = h1.bytes[1];
     h2.bytes[3] = h1.bytes[0];
-    uint32_t lm = ~h2.word;
+    return h2.word;
+}
+
+bool check_mask(uint32_t mask) {
+    // transform
+    uint32_t tl = change_endian_32b(mask);
+    uint32_t lm = ~tl;
 
     return (lm & (lm + 1)) == 0;
 }
@@ -115,16 +120,10 @@ bool disassemble(const uint8_t *packet, uint32_t len, RipPacket *output) {
         re.addr = *reinterpret_cast<const uint32_t*>(rip); rip += 4;
         re.mask = *reinterpret_cast<const uint32_t*>(rip); rip += 4;
         re.nexthop = *reinterpret_cast<const uint32_t*>(rip); rip += 4;
-        re.metric = *reinterpret_cast<const uint32_t*>(rip); rip += 4;
+        re.metric = change_endian_32b(*reinterpret_cast<const uint32_t*>(rip)); rip += 4;
 
         if (!check_mask(re.mask)) return false;
-
-        {
-            union helper h;
-            h.word = re.metric;
-            if (h.bytes[0] != 0 || h.bytes[1] != 0 || h.bytes[2] != 0) return false;
-            if (h.bytes[3] == 0 || h.bytes[3] > 16) return false;
-        }
+        if (re.metric == 0 || re.metric > 16) return false;
 
         output->entries[iter++] = re;
     }
@@ -164,7 +163,7 @@ uint32_t assemble(const RipPacket *rip, uint8_t *buffer) {
         *reinterpret_cast<uint32_t*>(buffer) = re.addr; buffer += 4;
         *reinterpret_cast<uint32_t*>(buffer) = re.mask; buffer += 4;
         *reinterpret_cast<uint32_t*>(buffer) = re.nexthop; buffer += 4;
-        *reinterpret_cast<uint32_t*>(buffer) = re.metric; buffer += 4;
+        *reinterpret_cast<uint32_t*>(buffer) = change_endian_32b(re.metric); buffer += 4;
     }
 
     return (4 + 20 * rip -> numEntries);

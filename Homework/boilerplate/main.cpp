@@ -7,7 +7,12 @@
 #include <string.h>
 #include <algorithm>
 
-#define RIP_MULTICAST_ADDR 0x090000e0
+constexpr in_addr_t RIP_MULTICAST_ADDR = 0x090000e0;
+constexpr uint32_t RIP_UNSOLICITED_INTERVAL = 30000;
+constexpr uint32_t RIP_TIMEOUT_INTERVAL = 180000;
+constexpr uint32_t RIP_EXPIRE_INTERVAL = 120000;
+
+#define ENABLE_RIP_DEBUG
 
 union helper {
     uint32_t b32;
@@ -47,6 +52,10 @@ bool check_ttl(uint8_t *packet) {
     return (ttl > 0);
 }
 
+inline uint32_t to_net_addr(uint32_t host_addr) {
+    return host_addr & 0x00ffffff;
+}
+
 void write_length_16b(uint8_t *start, uint32_t len) {
     union helper h;
     h.b32 = len;
@@ -56,8 +65,7 @@ void write_length_16b(uint8_t *start, uint32_t len) {
 
 extern RoutingTable rt;
 
-uint32_t generate_packet_p1(uint8_t *p) {
-    // TODO : split horizon
+uint32_t generate_packet_p1(uint8_t *p, uint32_t target_addr, uint32_t if_index) {
     RipPacket resp;
 
     uint32_t iter = 0;
@@ -66,8 +74,18 @@ uint32_t generate_packet_p1(uint8_t *p) {
         RipEntry re;
         re.addr = e.addr;
         re.mask = gen_mask(e.len);
-        re.nexthop = e.nexthop;
-        re.metric = e.metric;
+        re.nexthop = 0; // 0.0.0.0 stands for the originator
+        if (e.nexthop == 0 && e.if_index == if_index) {
+            // direct route
+            re.metric = e.metric;
+        } else if (target_addr == RIP_MULTICAST_ADDR && if_index == e.if_index) {
+            re.metric = 16;
+        } else if (e.nexthop == target_addr) {
+            // split horizon with reverse poisoning
+            re.metric = 16;
+        } else {
+            re.metric = e.metric;
+        }
         resp.entries[iter++] = re;
     }
     resp.numEntries = iter;
@@ -101,10 +119,11 @@ uint32_t generate_packet_p1(uint8_t *p) {
 inline void generate_packet_p2(uint8_t *p, uint32_t myaddr, uint32_t dst_addr) {
     *reinterpret_cast<in_addr_t *>(p + 12) = myaddr; // 12 - 15
     *reinterpret_cast<in_addr_t *>(p + 16) = dst_addr; // 16 - 19
+    updateChksm(p);
 }
 
-uint32_t generate_packet_full(uint8_t *p, uint32_t myaddr, uint32_t dst_addr) {
-    uint32_t pl = generate_packet_p1(p);
+uint32_t generate_packet_full(uint8_t *p, uint32_t myaddr, uint32_t dst_addr, uint32_t if_index) {
+    uint32_t pl = generate_packet_p1(p, dst_addr, if_index);
     generate_packet_p2(p, myaddr, dst_addr);
     return pl;
 }
@@ -126,7 +145,7 @@ void update_from_rip(RipPacket *p, uint32_t if_index, uint32_t src_addr) {
         uint32_t new_metric = incr_metric(re.metric);
         RoutingTableEntry e = {
             .addr = re.addr,
-            .len = count1(re.mask),
+            .len = count1(re.mask), // 'len' is the length of prefix 1
             .if_index = if_index,
             .nexthop = addr,
             .metric = new_metric,
@@ -169,12 +188,23 @@ void update_rt_timer() {
     while (iter != rt.end()) {
         auto next = std::next(iter);
 
-        if (iter->expire && time > iter->gc_timer + 120 * 1000) {
-            rt.erase(iter);
-        } else if (time > iter->update_timer + 180 * 1000) {
-            iter->expire = true;
-            iter->gc_timer = time;
-            iter->metric = 16;
+        if (iter -> expire) {
+            if (time > iter->gc_timer + RIP_EXPIRE_INTERVAL) {
+#ifdef ENABLE_RIP_DEBUG
+                printf("An entry has been gc\n");
+#endif
+                rt.erase(iter);
+            }
+        } else {
+            if (time > iter->update_timer + RIP_TIMEOUT_INTERVAL 
+                    && iter->nexthop != 0) { // do not delete direct route
+                iter->expire = true;
+                iter->gc_timer = time;
+                iter->metric = 16;
+#ifdef ENABLE_RIP_DEBUG
+                printf("An entry has expired\n");
+#endif
+            }
         }
         iter = next;
     }
@@ -186,9 +216,9 @@ int main(int argc, char *argv[]) {
 
     // if 0: 10.0.0.1
     // if 1: 10.0.1.1
-    // if 2: 10.0.2.1
+    // if 2: 10.42.0.1
     // if 3: 10.0.3.1
-    in_addr_t addrs[N_IFACE_ON_BOARD] = { 0x0100000a, 0x0101000a, 0x0102000a, 0x0103000a };
+    in_addr_t addrs[N_IFACE_ON_BOARD] = { 0x0100000a, 0x0101000a, 0x01002a0a, 0x0103000a };
 
     // 0a.
     int res = HAL_Init(1, addrs);
@@ -196,37 +226,49 @@ int main(int argc, char *argv[]) {
 	    return res;
     }
 
+    uint64_t last_time = HAL_GetTicks();
     // 0b. Add direct routes
     for (uint32_t i = 0; i < N_IFACE_ON_BOARD; i++) {
         RoutingTableEntry entry = {
-            .addr = addrs[i], // big endian
+            .addr = to_net_addr(addrs[i]), // big endian
             .len = 24,        // small endian
             .if_index = i,    // small endian
             .nexthop = 0,      // big endian, means direct
-            .metric = 1,
-            .update_timer = 0,
+            .metric = 1u,
+            .update_timer = last_time,
             .expire = false,
             .gc_timer = 0
         };
         update(true, entry);
     }
 
-    uint64_t last_time = 0;
     while (1) {
         update_rt_timer();
 
         uint64_t time = HAL_GetTicks();
-        if (time > last_time + 30 * 1000) {
+        if (time > last_time + RIP_UNSOLICITED_INTERVAL) {
             // Unsolicited response; ref. RFC2453 3.8
-            uint32_t pl = generate_packet_p1(output);
             // send complete routing table to every interface
             for (int i = 0; i < N_IFACE_ON_BOARD; i++) {
-                generate_packet_p2(output, addrs[i], RIP_MULTICAST_ADDR);
+#ifdef ENABLE_RIP_DEBUG
+                printf("Send Unsolicited response to if %d\n", i);
+#endif
+                uint32_t pl = generate_packet_full(output, addrs[i], RIP_MULTICAST_ADDR, i);
                 macaddr_t dst_rt_mac;
 
-                if (HAL_ArpGetMacAddress(i, RIP_MULTICAST_ADDR, dst_rt_mac)) {
-                    HAL_SendIPPacket(i, output, pl, dst_rt_mac);
+                if (!HAL_ArpGetMacAddress(i, RIP_MULTICAST_ADDR, dst_rt_mac)) {
+                    int ret = HAL_SendIPPacket(i, output, pl, dst_rt_mac);
+#ifdef ENABLE_RIP_DEBUG
+                    if (ret) {
+                        printf("Send ip failed on if %d\n", i);
+                    }
+#endif
+                } 
+#ifdef ENABLE_RIP_DEBUG
+                else {
+                        printf("Arp failed\n");
                 }
+#endif
             }
 
             printf("30s Timer\n");
@@ -258,16 +300,29 @@ int main(int argc, char *argv[]) {
 
         in_addr_t src_addr, dst_addr;
         get_addr(packet, &src_addr, &dst_addr);
+#ifdef ENABLE_RIP_DEBUG
+        printf("receive packet from src:%x to dst:%x\n", src_addr, dst_addr);
+#endif
 
         if (dst_addr == RIP_MULTICAST_ADDR) {
             RipPacket rip;
             if (disassemble(packet, res, &rip)) {
                 if (rip.command == 2) {
+#ifdef ENABLE_RIP_DEBUG
+                    printf("Receive a response from multicast addr\n");
+#endif
                     update_from_rip(&rip, if_index, src_addr);
                 } else {
-                    uint32_t pl = generate_packet_full(output, addrs[if_index], src_addr);
+#ifdef ENABLE_RIP_DEBUG
+                    printf("Receive a request from multicast addr\n");
+#endif
+                    uint32_t pl = generate_packet_full(output, addrs[if_index], src_addr, if_index);
                     HAL_SendIPPacket(if_index, output, pl, src_mac);
                 }
+            } else {
+#ifdef ENABLE_RIP_DEBUG
+                    printf("Disassemble failed\n");
+#endif
             }
             continue;
         }
@@ -287,15 +342,21 @@ int main(int argc, char *argv[]) {
             // check and validate
             if (disassemble(packet, res, &rip)) {
                 if (rip.command == 1) {
+#ifdef ENABLE_RIP_DEBUG
+                    printf("Receive a request sent to me\n");
+#endif
                     // 3a.3 request, ref. RFC2453 3.9.1
                     // only need to respond to whole table requests in the lab
-                    uint32_t pl = generate_packet_full(output, dst_addr, src_addr);
+                    uint32_t pl = generate_packet_full(output, dst_addr, src_addr, if_index);
                     // send it back
                     HAL_SendIPPacket(if_index, output, pl, src_mac);
                 } else {
                     // 3a.2 response, ref. RFC2453 3.9.2
                     // update routing table , metric, if_index, nexthop
-                    // triggered updates? ref. RFC2453 3.10.1
+                    // TODO : triggered updates? ref. RFC2453 3.10.1
+#ifdef ENABLE_RIP_DEBUG
+                    printf("Receive a response sent to me\n");
+#endif
                     update_from_rip(&rip, if_index, src_addr);
                 }
             }
@@ -323,7 +384,7 @@ int main(int argc, char *argv[]) {
                 }
             } else {
                 // routing not found
-                // optionally: send ICMP Host Unreachable
+                // *optionally*: send ICMP Host Unreachable
                 printf("IP not found for %x\n", src_addr);
             }
         }
