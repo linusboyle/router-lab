@@ -1,7 +1,6 @@
 #include "router.h"
 #include <stdint.h>
 #include <stdlib.h>
-#include <list>
 #include <algorithm>
 #include <limits>
 
@@ -21,12 +20,11 @@
   你可以在全局变量中把路由表以一定的数据结构格式保存下来。
 */
 
-inline uint32_t gen_mask(uint32_t len) {
+uint32_t gen_mask(uint32_t len) {
     return std::numeric_limits<uint32_t>::max() >> (32 - len); 
 }
 
-using RoutingTable = std::list<RoutingTableEntry>;
-static RoutingTable rt;
+RoutingTable rt;
 
 void insert(RoutingTableEntry& entry) {
     auto itr = std::find_if(rt.begin(), rt.end(), [&entry](const RoutingTableEntry& e) {
@@ -74,9 +72,9 @@ bool query(uint32_t addr, uint32_t *nexthop, uint32_t *if_index) {
     bool found = false;
 
     for (const RoutingTableEntry& e : rt) {
-        if (e.len >= len) {
+        if (e.len >= len && !e.expire) {
             uint32_t mask = gen_mask(e.len);
-            if ((addr & mask) == e.addr) {
+            if ((addr & mask) == (e.addr & mask)) {
                 *nexthop = e.nexthop;
                 *if_index = e.if_index;
                 len = e.len;
