@@ -45,6 +45,8 @@ uint16_t ip_compute_checksum(uint8_t *packet, size_t hl) {
 bool ip_validate_checksum(uint8_t *packet) {
     size_t hl = ip_header_length(packet);
     uint16_t old_sum = ip_get_checksum(packet);
+    uint16_t* hw = reinterpret_cast<uint16_t*>(packet + 10);
+    *hw = 0;
     uint16_t new_sum = ip_compute_checksum(packet, hl);
     return old_sum == new_sum;
 }

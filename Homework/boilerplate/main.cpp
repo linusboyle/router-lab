@@ -25,32 +25,7 @@ uint32_t count1(uint32_t n) {
 
 extern RoutingTable rt;
 
-uint32_t generate_packet_p1(uint8_t *p, uint32_t target_addr, uint32_t if_index) {
-    RipPacket resp;
-
-    uint32_t iter = 0;
-    for (const RoutingTableEntry &e : rt) { 
-        RipEntry re;
-        re.addr = e.addr;
-        re.mask = gen_mask(e.len);
-        re.nexthop = 0; // 0.0.0.0 stands for the originator
-        if (e.nexthop == 0 && e.if_index == if_index) {
-            // direct route
-            re.metric = e.metric;
-        } else if (target_addr == RIP_MULTICAST_ADDR && if_index == e.if_index) {
-            re.metric = 16;
-        } else if (e.nexthop == target_addr) {
-            // split horizon with reverse poisoning
-            re.metric = 16;
-        } else {
-            re.metric = e.metric;
-        }
-        resp.entries[iter++] = re;
-        if (iter == RIP_MAX_ENTRY) break; // TODO: there should be a better solution...
-    }
-    resp.numEntries = iter;
-    resp.command = 2;
-
+void send_rip_response(uint8_t *p, uint32_t if_index, uint32_t src_addr, uint32_t dst_addr, macaddr_t dst_mac) {
     // IP
     p[0] = 0x45; // version + ihl
     p[1] = 0x0; // tos
@@ -68,24 +43,59 @@ uint32_t generate_packet_p1(uint8_t *p, uint32_t target_addr, uint32_t if_index)
     p[26] = 0x0; // udp checksum, disabled
     p[27] = 0x0;
     // RIP
-    uint32_t rip_len = rip_assemble(&resp, &p[20 + 8]);
-    write_length_16b(&p[2], rip_len + 20 + 8); // ip - total length
-    write_length_16b(&p[24], rip_len + 8); // udp - length
-    ip_update_checksum(p); // checksum calculation for ip
+    RipPacket resp;
+    resp.command = 2;
 
-    return rip_len + 20 + 8;
-}
+    auto i = rt.begin();
+    uint32_t iter = 0;
+    while (i != rt.end()) {
+        if (iter == RIP_MAX_ENTRY) {
+            // send an IP packet
+            resp.numEntries = iter;
+            uint32_t rip_len = rip_assemble(&resp, &p[20 + 8]);
+            write_length_16b(&p[2], rip_len + 20 + 8); // ip - total length
+            write_length_16b(&p[24], rip_len + 8); // udp - length
+            *reinterpret_cast<in_addr_t *>(p + 12) = src_addr; // 12 - 15
+            *reinterpret_cast<in_addr_t *>(p + 16) = dst_addr; // 16 - 19
+            ip_update_checksum(p); // checksum calculation for ip
+            iter = 0;
+            HAL_SendIPPacket(if_index, p, rip_len + 20 + 8, dst_mac);
+        }
+        RoutingTableEntry e = *i;
+        RipEntry re;
+        re.addr = e.addr;
+        re.mask = gen_mask(e.len);
+        re.nexthop = 0; // 0.0.0.0 stands for the originator
+        if (e.nexthop == 0) {
+            // direct route with permanent metric 1
+            re.metric = e.metric;
+        } else if (dst_addr == RIP_MULTICAST_ADDR && if_index == e.if_index) {
+            re.metric = 16;
+        } else if (e.nexthop == dst_addr) {
+            // split horizon with reverse poisoning
+            re.metric = 16;
+        } else {
+            re.metric = e.metric;
+        }
+        resp.entries[iter++] = re;
 
-inline void generate_packet_p2(uint8_t *p, uint32_t myaddr, uint32_t dst_addr) {
-    *reinterpret_cast<in_addr_t *>(p + 12) = myaddr; // 12 - 15
-    *reinterpret_cast<in_addr_t *>(p + 16) = dst_addr; // 16 - 19
-    ip_update_checksum(p);
-}
+        i++;
+    }
 
-uint32_t generate_packet_full(uint8_t *p, uint32_t myaddr, uint32_t dst_addr, uint32_t if_index) {
-    uint32_t pl = generate_packet_p1(p, dst_addr, if_index);
-    generate_packet_p2(p, myaddr, dst_addr);
-    return pl;
+    // NOTE: as a side effect, 
+    // if routing table is empty,
+    // rip will never response
+    if (iter != 0) {
+        resp.numEntries = iter;
+        uint32_t rip_len = rip_assemble(&resp, &p[20 + 8]);
+        write_length_16b(&p[2], rip_len + 20 + 8); // ip - total length
+        write_length_16b(&p[24], rip_len + 8); // udp - length
+        *reinterpret_cast<in_addr_t *>(p + 12) = src_addr; // 12 - 15
+        *reinterpret_cast<in_addr_t *>(p + 16) = dst_addr; // 16 - 19
+        ip_update_checksum(p); // checksum calculation for ip
+        iter = 0;
+        HAL_SendIPPacket(if_index, p, rip_len + 20 + 8, dst_mac);
+    }
 }
 
 inline uint32_t incr_metric(uint32_t metric) {
@@ -213,16 +223,9 @@ int main(int, char**) {
 #ifdef ENABLE_RIP_DEBUG
                 printf("Send Unsolicited response to if %d\n", i);
 #endif
-                uint32_t pl = generate_packet_full(output, addrs[i], RIP_MULTICAST_ADDR, i);
                 macaddr_t dst_rt_mac;
-
                 if (!HAL_ArpGetMacAddress(i, RIP_MULTICAST_ADDR, dst_rt_mac)) {
-                    int ret = HAL_SendIPPacket(i, output, pl, dst_rt_mac);
-#ifdef ENABLE_RIP_DEBUG
-                    if (ret) {
-                        printf("Send ip failed on if %d\n", i);
-                    }
-#endif
+                    send_rip_response(output, i, addrs[i], RIP_MULTICAST_ADDR, dst_rt_mac);
                 } 
 #ifdef ENABLE_RIP_DEBUG
                 else {
@@ -276,8 +279,7 @@ int main(int, char**) {
 #ifdef ENABLE_RIP_DEBUG
                     printf("Receive a request from multicast addr\n");
 #endif
-                    uint32_t pl = generate_packet_full(output, addrs[if_index], src_addr, if_index);
-                    HAL_SendIPPacket(if_index, output, pl, src_mac);
+                    send_rip_response(output, if_index, addrs[if_index], src_addr, src_mac);
                 }
             } else {
 #ifdef ENABLE_RIP_DEBUG
@@ -307,9 +309,7 @@ int main(int, char**) {
 #endif
                     // 3a.3 request, ref. RFC2453 3.9.1
                     // only need to respond to whole table requests in the lab
-                    uint32_t pl = generate_packet_full(output, dst_addr, src_addr, if_index);
-                    // send it back
-                    HAL_SendIPPacket(if_index, output, pl, src_mac);
+                    send_rip_response(output, if_index, dst_addr, src_addr, src_mac);
                 } else {
                     // 3a.2 response, ref. RFC2453 3.9.2
                     // update routing table , metric, if_index, nexthop
