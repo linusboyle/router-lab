@@ -16,5 +16,5 @@ clean:
 hal.o: $(LAB_ROOT)/HAL/src/linux/router_hal.cpp
 	$(CXX) $(CXXFLAGS) -c $^ -o $@
 
-boilerplate: main.o hal.o protocol.o checksum.o lookup.o forwarding.o lib.o
+boilerplate: main.o hal.o lib.o
 	$(CXX) $^ -o $@ $(LDFLAGS) 

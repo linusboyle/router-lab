@@ -1,6 +1,3 @@
-#include "rip.h"
-#include "router.h"
-#include "router_hal.h"
 #include "lib.hpp"
 #include <stdint.h>
 #include <stdio.h>
@@ -14,15 +11,6 @@ constexpr uint32_t RIP_TIMEOUT_INTERVAL = 180000;
 constexpr uint32_t RIP_EXPIRE_INTERVAL = 120000;
 
 #define ENABLE_RIP_DEBUG
-
-extern bool validateIPChecksum(uint8_t *packet, size_t len);
-extern void update(bool insert, RoutingTableEntry entry);
-extern bool query(uint32_t addr, uint32_t *nexthop, uint32_t *if_index);
-extern bool forward(uint8_t *packet, size_t len);
-extern bool disassemble(const uint8_t *packet, uint32_t len, RipPacket *output);
-extern uint32_t assemble(const RipPacket *rip, uint8_t *buffer);
-extern void updateChksm(uint8_t *packet);
-extern uint32_t gen_mask(uint32_t len);
 
 uint32_t count1(uint32_t n) {
     uint32_t retval = 0;
@@ -80,10 +68,10 @@ uint32_t generate_packet_p1(uint8_t *p, uint32_t target_addr, uint32_t if_index)
     p[26] = 0x0; // udp checksum, disabled
     p[27] = 0x0;
     // RIP
-    uint32_t rip_len = assemble(&resp, &p[20 + 8]);
+    uint32_t rip_len = rip_assemble(&resp, &p[20 + 8]);
     write_length_16b(&p[2], rip_len + 20 + 8); // ip - total length
     write_length_16b(&p[24], rip_len + 8); // udp - length
-    updateChksm(p); // checksum calculation for ip
+    ip_update_checksum(p); // checksum calculation for ip
 
     return rip_len + 20 + 8;
 }
@@ -91,7 +79,7 @@ uint32_t generate_packet_p1(uint8_t *p, uint32_t target_addr, uint32_t if_index)
 inline void generate_packet_p2(uint8_t *p, uint32_t myaddr, uint32_t dst_addr) {
     *reinterpret_cast<in_addr_t *>(p + 12) = myaddr; // 12 - 15
     *reinterpret_cast<in_addr_t *>(p + 16) = dst_addr; // 16 - 19
-    updateChksm(p);
+    ip_update_checksum(p);
 }
 
 uint32_t generate_packet_full(uint8_t *p, uint32_t myaddr, uint32_t dst_addr, uint32_t if_index) {
@@ -265,7 +253,7 @@ int main(int, char**) {
         }
 
         // 1. validate
-        if (!validateIPChecksum(packet, res)) {
+        if (!ip_validate_checksum(packet)) {
             printf("Invalid IP Checksum\n");
             continue;
         }
@@ -278,7 +266,7 @@ int main(int, char**) {
 
         if (dst_addr == RIP_MULTICAST_ADDR) {
             RipPacket rip;
-            if (disassemble(packet, res, &rip)) {
+            if (rip_disassemble(packet, res, &rip)) {
                 if (rip.command == 2) {
 #ifdef ENABLE_RIP_DEBUG
                     printf("Receive a response from multicast addr\n");
@@ -312,7 +300,7 @@ int main(int, char**) {
             // 3a.1
             RipPacket rip;
             // check and validate
-            if (disassemble(packet, res, &rip)) {
+            if (rip_disassemble(packet, res, &rip)) {
                 if (rip.command == 1) {
 #ifdef ENABLE_RIP_DEBUG
                     printf("Receive a request sent to me\n");
@@ -348,7 +336,7 @@ int main(int, char**) {
                     // found
                     memcpy(output, packet, res);
                     // update ttl and checksum
-                    forward(output, res);
+                    ip_packet_forward(output);
                     if (ip_check_ttl(output)) HAL_SendIPPacket(dest_if, output, res, dest_mac);
                 } else {
                     // mac not found, drop it
