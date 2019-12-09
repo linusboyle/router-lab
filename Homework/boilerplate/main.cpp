@@ -1,6 +1,7 @@
 #include "rip.h"
 #include "router.h"
 #include "router_hal.h"
+#include "lib.hpp"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,12 +15,6 @@ constexpr uint32_t RIP_EXPIRE_INTERVAL = 120000;
 
 #define ENABLE_RIP_DEBUG
 
-union helper {
-    uint32_t b32;
-    uint16_t b16[2];
-    uint8_t b8[4];
-};
-
 extern bool validateIPChecksum(uint8_t *packet, size_t len);
 extern void update(bool insert, RoutingTableEntry entry);
 extern bool query(uint32_t addr, uint32_t *nexthop, uint32_t *if_index);
@@ -28,12 +23,6 @@ extern bool disassemble(const uint8_t *packet, uint32_t len, RipPacket *output);
 extern uint32_t assemble(const RipPacket *rip, uint8_t *buffer);
 extern void updateChksm(uint8_t *packet);
 extern uint32_t gen_mask(uint32_t len);
-
-void get_addr(uint8_t *packet, in_addr_t *src_addr, in_addr_t *dst_addr) {
-    uint32_t *ptr = reinterpret_cast<uint32_t *>(packet);
-    *src_addr = static_cast<in_addr_t>(*(ptr + 3));
-    *dst_addr = static_cast<in_addr_t>(*(ptr + 4));
-}
 
 uint32_t count1(uint32_t n) {
     uint32_t retval = 0;
@@ -46,23 +35,6 @@ uint32_t count1(uint32_t n) {
     return retval;
 }
 
-bool check_ttl(uint8_t *packet) {
-    uint8_t *targ = packet + 8;
-    uint8_t ttl = *targ;
-    return (ttl > 0);
-}
-
-inline uint32_t to_net_addr(uint32_t host_addr) {
-    return host_addr & 0x00ffffff;
-}
-
-void write_length_16b(uint8_t *start, uint32_t len) {
-    union helper h;
-    h.b32 = len;
-    *start = h.b8[1];
-    *(start + 1) = h.b8[0];
-}
-
 extern RoutingTable rt;
 
 uint32_t generate_packet_p1(uint8_t *p, uint32_t target_addr, uint32_t if_index) {
@@ -70,7 +42,6 @@ uint32_t generate_packet_p1(uint8_t *p, uint32_t target_addr, uint32_t if_index)
 
     uint32_t iter = 0;
     for (const RoutingTableEntry &e : rt) { 
-        // TODO: may out-of-bound
         RipEntry re;
         re.addr = e.addr;
         re.mask = gen_mask(e.len);
@@ -87,6 +58,7 @@ uint32_t generate_packet_p1(uint8_t *p, uint32_t target_addr, uint32_t if_index)
             re.metric = e.metric;
         }
         resp.entries[iter++] = re;
+        if (iter == RIP_MAX_ENTRY) break; // TODO: there should be a better solution...
     }
     resp.numEntries = iter;
     resp.command = 2;
@@ -140,14 +112,14 @@ void update_from_rip(RipPacket *p, uint32_t if_index, uint32_t src_addr) {
     for (uint32_t i = 0; i < num; ++i) {
         RipEntry re = p->entries[i];
 
-        uint32_t addr = re.nexthop == 0 ? src_addr : re.nexthop; // rip-2 extension
+        uint32_t next_addr = re.nexthop == 0 ? src_addr : re.nexthop; // rip-2 extension
 
         uint32_t new_metric = incr_metric(re.metric);
         RoutingTableEntry e = {
             .addr = re.addr,
             .len = count1(re.mask), // 'len' is the length of prefix 1
             .if_index = if_index,
-            .nexthop = addr,
+            .nexthop = next_addr,
             .metric = new_metric,
             .update_timer = time,
             .expire = false,
@@ -210,7 +182,7 @@ void update_rt_timer() {
     }
 }
 
-int main(int argc, char *argv[]) {
+int main(int, char**) {
     uint8_t packet[2048];
     uint8_t output[2048];
 
@@ -230,7 +202,7 @@ int main(int argc, char *argv[]) {
     // 0b. Add direct routes
     for (uint32_t i = 0; i < N_IFACE_ON_BOARD; i++) {
         RoutingTableEntry entry = {
-            .addr = to_net_addr(addrs[i]), // big endian
+            .addr = to_netaddr_24b(addrs[i]), // big endian
             .len = 24,        // small endian
             .if_index = i,    // small endian
             .nexthop = 0,      // big endian, means direct
@@ -299,7 +271,7 @@ int main(int argc, char *argv[]) {
         }
 
         in_addr_t src_addr, dst_addr;
-        get_addr(packet, &src_addr, &dst_addr);
+        ip_get_addr(packet, &src_addr, &dst_addr);
 #ifdef ENABLE_RIP_DEBUG
         printf("receive packet from src:%x to dst:%x\n", src_addr, dst_addr);
 #endif
@@ -377,7 +349,7 @@ int main(int argc, char *argv[]) {
                     memcpy(output, packet, res);
                     // update ttl and checksum
                     forward(output, res);
-                    if (check_ttl(output)) HAL_SendIPPacket(dest_if, output, res, dest_mac);
+                    if (ip_check_ttl(output)) HAL_SendIPPacket(dest_if, output, res, dest_mac);
                 } else {
                     // mac not found, drop it
                     printf("ARP not found for %x\n", nexthop);
