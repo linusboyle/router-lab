@@ -267,11 +267,12 @@ int main(int, char**) {
             printf("Invalid IP Checksum\n");
             continue;
         }
+	uint16_t chksm = ip_get_checksum(packet);
 
         in_addr_t src_addr, dst_addr;
         ip_get_addr(packet, &src_addr, &dst_addr);
 #ifdef ENABLE_RIP_DEBUG
-        printf("receive an ip packet from %x to %x\n", src_addr, dst_addr);
+        printf("receive an ip packet from %x to %x, checksum %x\n", src_addr, dst_addr, chksm);
 #endif
 
         if (dst_addr == RIP_MULTICAST_ADDR) {
