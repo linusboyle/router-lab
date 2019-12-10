@@ -201,7 +201,7 @@ int main(int, char**) {
     // if 1: 10.0.1.1
     // if 2: 10.42.0.1
     // if 3: 10.0.3.1
-    in_addr_t addrs[N_IFACE_ON_BOARD] = { 0x0100000a, 0x0101000a, 0x01002a0a, 0x0103000a };
+    in_addr_t addrs[N_IFACE_ON_BOARD] = { 0x0101000a, 0x0202000a, 0x0103000a, 0x0104000a };
 
     // 0a.
     int res = HAL_Init(1, addrs);
