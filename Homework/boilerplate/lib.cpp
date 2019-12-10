@@ -204,7 +204,7 @@ bool query(uint32_t addr, uint32_t *nexthop, uint32_t *if_index) {
     bool found = false;
 
     for (const RoutingTableEntry& e : rt) {
-        if (e.len >= len && !e.expire) {
+        if (e.len >= len && !e.expire && e.metric < 16) {
             uint32_t mask = gen_mask(e.len);
             if ((addr & mask) == (e.addr & mask)) {
                 *nexthop = e.nexthop;
