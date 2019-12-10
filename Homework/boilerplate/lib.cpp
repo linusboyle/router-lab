@@ -28,6 +28,9 @@ void write_length_16b(uint8_t *start, uint32_t len) {
 }
 
 uint16_t ip_compute_checksum(uint8_t *packet, size_t hl) {
+    uint16_t* hw = reinterpret_cast<uint16_t*>(packet + 10);
+    uint16_t tmp = *hw;
+    *hw = 0;
     uint8_t* end = packet + hl;
 
     uint32_t checkSum = 0x00000000;
@@ -39,14 +42,13 @@ uint16_t ip_compute_checksum(uint8_t *packet, size_t hl) {
     checkSum += (checkSum >> 16);
 
     uint16_t csm = static_cast<uint16_t> (~checkSum);
+    *hw = tmp;
     return csm;
 }
 
 bool ip_validate_checksum(uint8_t *packet) {
     size_t hl = ip_header_length(packet);
     uint16_t old_sum = ip_get_checksum(packet);
-    uint16_t* hw = reinterpret_cast<uint16_t*>(packet + 10);
-    *hw = 0;
     uint16_t new_sum = ip_compute_checksum(packet, hl);
     return old_sum == new_sum;
 }
@@ -60,7 +62,6 @@ void ip_update_ttl(uint8_t *packet) {
 void ip_update_checksum(uint8_t *packet) {
     size_t hl = ip_header_length(packet);
     uint16_t* hw = reinterpret_cast<uint16_t*>(packet + 10);
-    *hw = 0;
     uint16_t new_sum = ip_compute_checksum(packet, hl);
     *hw = new_sum;
 }
