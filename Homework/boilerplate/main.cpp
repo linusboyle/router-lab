@@ -185,6 +185,14 @@ void update_rt_timer() {
     }
 }
 
+void print_rt() {
+    printf("------Routing Table @ %lu------\n", HAL_GetTicks());
+    printf("ip/mask\tinterface\tnexthop\tmetric\n");
+    for (const RoutingTableEntry& e : rt) {
+        printf("%08X/%02d\t%u\t%08X\t%02d\n", e.addr, e.len, e.if_index, e.nexthop, e.metric);
+    }
+}
+
 int main(int, char**) {
     uint8_t packet[2048];
     uint8_t output[2048];
@@ -219,6 +227,7 @@ int main(int, char**) {
 
     while (1) {
         update_rt_timer();
+        print_rt();
 
         uint64_t time = HAL_GetTicks();
         if (time > last_time + RIP_UNSOLICITED_INTERVAL) {
