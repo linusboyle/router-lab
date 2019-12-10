@@ -129,23 +129,28 @@ void update_from_rip(RipPacket *p, uint32_t if_index, uint32_t src_addr) {
         });
 
         if (iter == rt.end()) {
-            // not found, add it if accessible
+            // not found, add if it's reachable
             if (new_metric < 16) {
                 update(true, e);
             }
         } else {
             if (src_addr == iter->nexthop) {
-                // if packet comes from the best route,
-                // update without checking metric is smaller
                 if (new_metric == 16) {
-                    update(false, e);
+                    // if the best route claims unreachability,
+                    // start gc timer immediatly
+                    if (!iter->expire) {
+                        iter->expire = true;
+                        iter->gc_timer = HAL_GetTicks();
+                    }
                 } else {
-                    update(true, e);
+                    // if packet comes from the best route,
+                    // update without checking metric is smaller
+                    update(true, e); // the timer is refreshed
                 }
             } else {
                 uint32_t old_metric = iter->metric;
                 if (new_metric < old_metric) {
-                    update(true, e);
+                    update(true, e); // the gc process is implicitly stopped
                 }
             }
         }
@@ -161,7 +166,7 @@ void update_rt_timer() {
         if (iter -> expire) {
             if (time > iter->gc_timer + RIP_EXPIRE_INTERVAL) {
 #ifdef ENABLE_RIP_DEBUG
-                printf("An entry has been gc\n");
+                printf("An entry has been garbage collected\n");
 #endif
                 rt.erase(iter);
             }
@@ -220,18 +225,11 @@ int main(int, char**) {
             // Unsolicited response; ref. RFC2453 3.8
             // send complete routing table to every interface
             for (int i = 0; i < N_IFACE_ON_BOARD; i++) {
-#ifdef ENABLE_RIP_DEBUG
-                printf("Send Unsolicited response to if %d\n", i);
-#endif
+                printf("Send unsolicited response to if %d\n", i);
                 macaddr_t dst_rt_mac;
                 if (!HAL_ArpGetMacAddress(i, RIP_MULTICAST_ADDR, dst_rt_mac)) {
                     send_rip_response(output, i, addrs[i], RIP_MULTICAST_ADDR, dst_rt_mac);
-                } 
-#ifdef ENABLE_RIP_DEBUG
-                else {
-                        printf("Arp failed\n");
                 }
-#endif
             }
 
             printf("30s Timer\n");
@@ -264,7 +262,7 @@ int main(int, char**) {
         in_addr_t src_addr, dst_addr;
         ip_get_addr(packet, &src_addr, &dst_addr);
 #ifdef ENABLE_RIP_DEBUG
-        printf("receive packet from src:%x to dst:%x\n", src_addr, dst_addr);
+        printf("receive an ip packet from %x to %x\n", src_addr, dst_addr);
 #endif
 
         if (dst_addr == RIP_MULTICAST_ADDR) {
@@ -337,7 +335,9 @@ int main(int, char**) {
                     memcpy(output, packet, res);
                     // update ttl and checksum
                     ip_packet_forward(output);
-                    if (ip_check_ttl(output)) HAL_SendIPPacket(dest_if, output, res, dest_mac);
+                    if (ip_check_ttl(output)) 
+                        if (HAL_SendIPPacket(dest_if, output, res, dest_mac))
+                            printf("Forwarding ip packet from %x to %x failed", src_addr, nexthop);
                 } else {
                     // mac not found, drop it
                     printf("ARP not found for %x\n", nexthop);
@@ -345,7 +345,7 @@ int main(int, char**) {
             } else {
                 // routing not found
                 // *optionally*: send ICMP Host Unreachable
-                printf("IP not found for %x\n", src_addr);
+                printf("no routing rule to forward ip packet from %x to %x\n", src_addr, dst_addr);
             }
         }
     }
