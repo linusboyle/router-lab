@@ -197,11 +197,11 @@ int main(int, char**) {
     uint8_t packet[2048];
     uint8_t output[2048];
 
-    // if 0: 10.0.0.1
-    // if 1: 10.0.1.1
-    // if 2: 10.42.0.1
+    // if 0: 192.168.3.2
+    // if 1: 192.168.4.1
+    // if 2: 10.0.2.1
     // if 3: 10.0.3.1
-    in_addr_t addrs[N_IFACE_ON_BOARD] = { 0x0100000a, 0x0101000a, 0x01002a0a, 0x0103000a };
+    in_addr_t addrs[N_IFACE_ON_BOARD] = { 0x0203a8c0, 0x0104a8c0, 0x0102000a, 0x0103000a };
 
     // 0a.
     int res = HAL_Init(1, addrs);
