@@ -5,6 +5,6 @@
 const char *interfaces[N_IFACE_ON_BOARD] = {
     "lan0",
     "lan1",
-    "enp0s31f6",
+    "enp4s0",
     "eth3",
 };

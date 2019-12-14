@@ -29,6 +29,49 @@
   需要注意这里的地址都是用 **大端序** 存储的，1.2.3.4 对应 0x04030201 。
 */
 
+inline uint32_t ip_header_length(const uint8_t *packet) { // in bytes
+    uint8_t IHL = (*packet) & 0x0f; // in words (32bit)
+    return static_cast<uint32_t> (IHL * 4);
+}
+
+inline uint32_t ip_total_length(const uint8_t *packet) {
+    uint8_t hbit = *(packet + 2);
+    uint8_t lbit = *(packet + 3);
+    uint32_t retval = static_cast<uint32_t>(hbit);
+    // transform endian
+    retval <<= 8;
+    retval += static_cast<uint32_t>(lbit);
+    return retval;
+}
+
+inline uint32_t rip_num_entry(uint32_t hl, uint32_t tl) {
+    return (tl - hl - 8 - 4) / 20;
+}
+
+union helper {
+    uint32_t word;
+    uint8_t bytes[4];
+};
+
+uint32_t change_endian_32b(uint32_t word) {
+    union helper h1;
+    h1.word = word;
+    union helper h2;
+    h2.bytes[0] = h1.bytes[3];
+    h2.bytes[1] = h1.bytes[2];
+    h2.bytes[2] = h1.bytes[1];
+    h2.bytes[3] = h1.bytes[0];
+    return h2.word;
+}
+
+bool check_mask(uint32_t mask) {
+    // transform
+    uint32_t tl = change_endian_32b(mask);
+    uint32_t lm = ~tl;
+
+    return (lm & (lm + 1)) == 0;
+}
+
 /**
  * @brief 从接受到的 IP 包解析出 Rip 协议的数据
  * @param packet 接受到的 IP 包
@@ -44,8 +87,48 @@
  * Mask 的二进制是不是连续的 1 与连续的 0 组成等等。
  */
 bool disassemble(const uint8_t *packet, uint32_t len, RipPacket *output) {
-  // TODO:
-  return false;
+    uint32_t hl = ip_header_length(packet);
+    uint32_t tl = ip_total_length(packet);
+    if (tl > len) return false;
+
+    const uint8_t *rip = packet + hl + 8; // 8 : udp header
+    uint32_t num_entry = rip_num_entry(hl, len);
+
+    uint8_t command = *(rip++);
+    uint8_t version = *(rip++);
+    uint8_t zeroH = *(rip++);
+    uint8_t zeroL = *(rip++);
+    if (command != 1 && command != 2) return false;
+    if (version != 2) return false;
+    if (zeroH != 0 || zeroL != 0) return false;
+
+    output->numEntries = num_entry;
+    output->command = command;
+
+    uint32_t iter = 0;
+    while (iter != num_entry) {
+        RipEntry re;
+        uint8_t familyH = *(rip++);
+        uint8_t familyL = *(rip++);
+        if (familyH != 0) return false;
+        if ((command == 1 && familyL != 0) || (command == 2 && familyL != 2)) return false;
+
+        uint8_t tagH = *(rip++);
+        uint8_t tagL = *(rip++);
+        if (tagH != 0 || tagL != 0) return false;
+
+        re.addr = *reinterpret_cast<const uint32_t*>(rip); rip += 4;
+        re.mask = *reinterpret_cast<const uint32_t*>(rip); rip += 4;
+        re.nexthop = *reinterpret_cast<const uint32_t*>(rip); rip += 4;
+        re.metric = change_endian_32b(*reinterpret_cast<const uint32_t*>(rip)); rip += 4;
+
+        if (!check_mask(re.mask)) return false;
+        if (re.metric == 0 || re.metric > 16) return false;
+
+        output->entries[iter++] = re;
+    }
+
+    return true;
 }
 
 /**
@@ -59,6 +142,29 @@ bool disassemble(const uint8_t *packet, uint32_t len, RipPacket *output) {
  * 需要注意一些没有保存在 RipPacket 结构体内的数据的填写。
  */
 uint32_t assemble(const RipPacket *rip, uint8_t *buffer) {
-  // TODO:
-  return 0;
+    *(buffer++) = rip->command;
+    *(buffer++) = 2; // version
+    *(buffer++) = 0; // zeros
+    *(buffer++) = 0;
+
+    uint32_t iter = 0;
+    while (iter != rip -> numEntries) {
+        auto re = rip->entries[iter++];
+        // family
+        *(buffer++) = 0;
+        if (rip -> command == 2)
+            *(buffer++) = 2;
+        else
+            *(buffer++) = 0;
+        // tag
+        *(buffer++) = 0;
+        *(buffer++) = 0;
+        // addr
+        *reinterpret_cast<uint32_t*>(buffer) = re.addr; buffer += 4;
+        *reinterpret_cast<uint32_t*>(buffer) = re.mask; buffer += 4;
+        *reinterpret_cast<uint32_t*>(buffer) = re.nexthop; buffer += 4;
+        *reinterpret_cast<uint32_t*>(buffer) = change_endian_32b(re.metric); buffer += 4;
+    }
+
+    return (4 + 20 * rip -> numEntries);
 }
