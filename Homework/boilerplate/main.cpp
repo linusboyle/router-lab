@@ -342,8 +342,7 @@ int main(int, char**) {
                     // found
                     memcpy(output, packet, res);
                     // update ttl and checksum
-                    ip_packet_forward(output);
-                    if (ip_check_ttl(output)) 
+                    if(ip_packet_forward(output))
                         if (HAL_SendIPPacket(dest_if, output, res, dest_mac))
                             printf("Forwarding ip packet from %x to %x failed", src_addr, nexthop);
                 } else {

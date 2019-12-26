@@ -14,12 +14,6 @@ void ip_get_addr(uint8_t *packet, in_addr_t *src_addr, in_addr_t *dst_addr) {
     *dst_addr = static_cast<in_addr_t>(*(ptr + 4));
 }
 
-bool ip_check_ttl(uint8_t *packet) {
-    uint8_t *targ = packet + 8;
-    uint8_t ttl = *targ;
-    return (ttl > 0);
-}
-
 void write_length_16b(uint8_t *start, uint32_t len) {
     union helper h;
     h.b32 = len;
@@ -53,12 +47,6 @@ bool ip_validate_checksum(uint8_t *packet) {
     return old_sum == new_sum;
 }
 
-void ip_update_ttl(uint8_t *packet) {
-    uint8_t *targ = packet + 8;
-    uint8_t ttl = *targ;
-    *targ = ttl - 1u;
-}
-
 void ip_update_checksum(uint8_t *packet) {
     size_t hl = ip_header_length(packet);
     uint16_t* hw = reinterpret_cast<uint16_t*>(packet + 10);
@@ -67,11 +55,28 @@ void ip_update_checksum(uint8_t *packet) {
 }
 
 bool ip_packet_forward(uint8_t *packet) {
-    if (!ip_validate_checksum(packet))
+    uint16_t* hw = reinterpret_cast<uint16_t*>(packet + 10);
+    uint16_t old_checksum = *hw;
+
+    uint16_t* hw2 = reinterpret_cast<uint16_t*>(packet + 8);
+    uint16_t old_field = *hw2;
+
+    uint8_t *targ = packet + 8;
+    uint8_t ttl = *targ;
+    ttl -= 1u;
+    if (ttl > 0) {
+        *targ = ttl;
+        uint16_t new_field = *hw2;
+
+        // update checksum;
+        uint32_t sum = (~old_checksum & 0xffff) + (~old_field & 0xffff) + new_field;
+        sum = (sum >> 16) + (sum & 0xffff);
+        sum += (sum >> 16);
+        *hw = ~sum;
+        return true;
+    } else {
         return false;
-    ip_update_ttl(packet);
-    ip_update_checksum(packet);
-    return true;
+    }
 }
 
 uint32_t change_endian_32b(uint32_t word) {
