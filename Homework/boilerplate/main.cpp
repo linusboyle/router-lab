@@ -197,11 +197,11 @@ int main(int, char**) {
     uint8_t packet[2048];
     uint8_t output[2048];
 
-    // if 0: 192.168.3.2
-    // if 1: 192.168.4.1
+    // if 0: 192.168.4.1
+    // if 1: 192.168.3.2
     // if 2: 10.0.2.1
     // if 3: 10.0.3.1
-    in_addr_t addrs[N_IFACE_ON_BOARD] = { 0x0203a8c0, 0x0104a8c0, 0x0102000a, 0x0103000a };
+    in_addr_t addrs[N_IFACE_ON_BOARD] = { 0x0104a8c0, 0x0203a8c0, 0x0102000a, 0x0103000a };
 
     // 0a.
     int res = HAL_Init(1, addrs);
@@ -340,10 +340,10 @@ int main(int, char**) {
                 }
                 if (HAL_ArpGetMacAddress(dest_if, nexthop, dest_mac) == 0) {
                     // found
-                    memcpy(output, packet, res);
+                    //memcpy(output, packet, res);
                     // update ttl and checksum
-                    if(ip_packet_forward(output))
-                        if (HAL_SendIPPacket(dest_if, output, res, dest_mac))
+                    if(ip_packet_forward(packet))
+                        if (HAL_SendIPPacket(dest_if, packet, res, dest_mac))
                             printf("Forwarding ip packet from %x to %x failed", src_addr, nexthop);
                 } else {
                     // mac not found, drop it
