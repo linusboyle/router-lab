@@ -6,11 +6,12 @@
 #include <algorithm>
 
 constexpr in_addr_t RIP_MULTICAST_ADDR = 0x090000e0;
-constexpr uint32_t RIP_UNSOLICITED_INTERVAL = 30000;
+constexpr uint32_t RIP_UNSOLICITED_INTERVAL = 5000;
 constexpr uint32_t RIP_TIMEOUT_INTERVAL = 180000;
 constexpr uint32_t RIP_EXPIRE_INTERVAL = 120000;
+constexpr uint32_t RIP_TIMER_INTERVAL = 10000;
 
-#define ENABLE_RIP_DEBUG
+// #define ENABLE_RIP_DEBUG
 
 uint32_t count1(uint32_t n) {
     uint32_t retval = 0;
@@ -157,7 +158,10 @@ void update_from_rip(RipPacket *p, uint32_t if_index, uint32_t src_addr) {
     }
 }
 
+bool time_updated = false;
 void update_rt_timer() {
+    if (time_updated)
+	return;
     auto iter = rt.begin();
     uint64_t time = HAL_GetTicks();
     while (iter != rt.end()) {
@@ -183,6 +187,7 @@ void update_rt_timer() {
         }
         iter = next;
     }
+    time_updated = true;
 }
 
 void print_rt() {
@@ -226,10 +231,10 @@ int main(int, char**) {
     }
 
     while (1) {
-        update_rt_timer();
-
+	time_updated = false;
         uint64_t time = HAL_GetTicks();
         if (time > last_time + RIP_UNSOLICITED_INTERVAL) {
+	    update_rt_timer();
             print_rt();
             // Unsolicited response; ref. RFC2453 3.8
             // send complete routing table to every interface
@@ -281,10 +286,11 @@ int main(int, char**) {
                     printf("Receive a response from multicast addr\n");
 #endif
                     update_from_rip(&rip, if_index, src_addr);
-                } else {
+                } else { 
 #ifdef ENABLE_RIP_DEBUG
                     printf("Receive a request from multicast addr\n");
 #endif
+		    update_rt_timer();
                     send_rip_response(output, if_index, addrs[if_index], src_addr, src_mac);
                 }
             } else {
@@ -315,6 +321,7 @@ int main(int, char**) {
 #endif
                     // 3a.3 request, ref. RFC2453 3.9.1
                     // only need to respond to whole table requests in the lab
+		    update_rt_timer();
                     send_rip_response(output, if_index, dst_addr, src_addr, src_mac);
                 } else {
                     // 3a.2 response, ref. RFC2453 3.9.2
